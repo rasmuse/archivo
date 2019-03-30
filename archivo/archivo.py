@@ -241,7 +241,7 @@ def restore(file_list: FileList, dst_dir: path_like, storage: Storage) -> None:
         dst_path = dst_dir.joinpath(rel_path)
         existing_spec = make_file_spec(dst_path, desired_spec.hash_name)
         if not existing_spec.is_equivalent(desired_spec):
-            raise CollisionError(f'collision at {dst_path}')
+            raise CollisionError(f'collision at {dst_path}: existing {existing_spec} but should place {desired_spec}')
 
     to_restore = {k: v for k, v in file_list.items() if k not in colliders}
 
