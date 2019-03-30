@@ -9,6 +9,7 @@ from typing import (
     Union,
     Sequence,
     Dict,
+    Generator,
     )
 import attr
 
@@ -27,11 +28,7 @@ class FileSpec:
     hash_name: str
     hexdigest: str
 
-@attr.s(auto_attribs=True)
-class DirSpec:
-    files: Dict[str, 'NodeSpec']
-
-NodeSpec = Union[DirSpec, FileSpec]
+FileList = Dict[str, FileSpec]
 
 _CHUNK_SIZE = 8096
 
@@ -48,28 +45,38 @@ def make_file_spec(path: Path, hash_name: str) -> FileSpec:
 
     return FileSpec(hash_name, m.hexdigest())
 
+def _generate_file_paths(
+    current_dir: Path,
+    root_dir=None
+    ) -> Generator[Path, None, None]:
 
-def make_node_spec(path: Path, hash_name: str) -> NodeSpec:
-    if path.is_file():
-        return make_file_spec(path, hash_name)
-    else:
-        return make_dir_spec(path, hash_name)
+    if not current_dir.is_dir():
+        raise ValueError(f'the path {current_dir} is not a directory')
 
-def make_dir_spec(start_dir: Path, hash_name: str) -> DirSpec:
-    if not start_dir.is_dir():
-        raise ValueError(f'the path {start_dir} is not a directory')
+    if not root_dir:
+        root_dir = current_dir
+
+    for child in current_dir.iterdir():
+        if child.is_file():
+            yield child.relative_to(root_dir)
+        else:
+            yield from _generate_file_paths(child, root_dir=root_dir)
+
+def make_file_list(the_dir: Path, hash_name: str) -> FileList:
+    if not the_dir.is_dir():
+        raise ValueError(f'the path {the_dir} is not a directory')
 
     files = {
-        child.name: make_node_spec(child, hash_name)
-        for child in start_dir.iterdir()
+        str(child): make_file_spec(child, hash_name)
+        for child in _generate_file_paths(the_dir)
         }
-    return DirSpec(files)
+    return files
 
 def store(
     paths: Sequence[path_like],
     storage: Storage,
     relative_to: path_like = '.'
-    ) -> DirSpec:
+    ) -> FileList:
     pass
 
 
