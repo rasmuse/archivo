@@ -103,7 +103,22 @@ class FileSpec:
     size: int
     ctime_ns: int
 
+
+    def _equiv_dict(self):
+        return {k: getattr(self, k) for k in _EQUIV_ATTRIBUTES}
+
+    def is_equivalent(self, other):
+        return self._equiv_dict() == other._equiv_dict()
+
 FileList = Dict[Path, FileSpec]
+
+
+
+class CollisionError(Exception):
+    pass
+
+class RestoreError(Exception):
+    pass
 
 _CHUNK_SIZE = 8096
 
@@ -181,6 +196,20 @@ def _move_to_storage(file_list, src_dir, storage):
             os.makedirs(dst_path.parent, exist_ok=True)
             os.rename(src_path, dst_path)
 
+def _restore_to_temp_dir(file_list, dst_dir, storage):
+    for rel_path, file_spec in file_list.items():
+        src_path = storage.get_file_path(file_spec)
+        dst_path = dst_dir.joinpath(rel_path)
+        os.makedirs(dst_path.parent, exist_ok=True)
+        shutil.copy2(src_path, dst_path)
+        _restore_stat_data(dst_path, file_spec)
+
+        restored_spec = make_file_spec(dst_path, file_spec.hash_name)
+        if not file_spec.is_equivalent(restored_spec):
+            message = f'restored {restored_spec} but expected {file_spec}'
+            raise RestoreError(message)
+
+
 def store(
     path: path_like,
     storage: Storage,
@@ -200,3 +229,29 @@ def store(
         _move_to_storage(file_list, temp_dir, storage)
 
     return file_list
+
+
+def restore(file_list: FileList, dst_dir: path_like, storage: Storage) -> None:
+    dst_dir = Path(dst_dir)
+
+    colliders = {p for p in file_list if dst_dir.joinpath(p).exists()}
+
+    for rel_path in colliders:
+        desired_spec = file_list[rel_path]
+        dst_path = dst_dir.joinpath(rel_path)
+        existing_spec = make_file_spec(dst_path, desired_spec.hash_name)
+        if not existing_spec.is_equivalent(desired_spec):
+            raise CollisionError(f'collision at {dst_path}')
+
+    to_restore = {k: v for k, v in file_list.items() if k not in colliders}
+
+    temp_dir = storage.get_temp_dir()
+    os.makedirs(temp_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=temp_dir) as temp_dir:
+        temp_dir = Path(temp_dir)
+        _restore_to_temp_dir(to_restore, temp_dir, storage)
+        for rel_path in _generate_file_paths(temp_dir):
+            src_path = temp_dir.joinpath(rel_path)
+            dst_path = dst_dir.joinpath(rel_path)
+            os.makedirs(dst_path.parent, exist_ok=True)
+            os.rename(src_path, dst_path)
