@@ -133,13 +133,14 @@ def _generate_file_paths(
     root_dir=None
     ) -> Generator[Path, None, None]:
 
-    if not current_dir.is_dir():
-        raise ValueError(f'the path {current_dir} is not a directory')
+    assert current_dir.is_dir(), current_dir
+    assert current_dir.is_absolute()
 
     if not root_dir:
         root_dir = current_dir
 
     for child in current_dir.iterdir():
+        assert child.is_absolute()
         if child.is_file():
             yield child.relative_to(root_dir)
         else:
@@ -150,16 +151,59 @@ def make_file_list(the_dir: Path, hash_name: str) -> FileList:
         raise ValueError(f'the path {the_dir} is not a directory')
 
     files = {
-        str(child): make_file_spec(child, hash_name)
+        child: make_file_spec(child, hash_name)
         for child in _generate_file_paths(the_dir)
         }
+
     return files
 
+def _get_name(path: Path) -> str:
+    # Doing path.resolve() on a symlink would give the name of what
+    # the symlink points to, but we want the name of the symlink
+    # to represent the file or directory of what the symlink points to.
+    if path.is_symlink():
+        return path.name
+
+    # For concrete files and directories (including '.', and '..' etc)
+    # we get the right name by doing path.resolve()
+    else:
+        return path.resolve().name
+
+def _copy_into(src_path: Path, dst_dir: Path) -> None:
+    name = _get_name(src_path)
+    dst_path = dst_dir.joinpath(name)
+
+    if src_path.is_dir():
+        shutil.copytree(src_path, dst_path)
+    elif src_path.is_file():
+        shutil.copy2(src_path, dst_path)
+    else:
+        raise ValueError(f'path {src_path} is of unsupported type')
+
+def _move_to_storage(file_list, src_dir, storage):
+    for src_rel_path, file_spec in file_list.items():
+        src_path = src_dir.joinpath(src_rel_path)
+        dst_path = storage.get_file_path(file_spec)
+        if not dst_path.exists():
+            os.makedirs(dst_path.parent, exist_ok=True)
+            os.rename(src_path, dst_path)
+
 def store(
-    paths: Sequence[path_like],
+    path: path_like,
     storage: Storage,
-    relative_to: path_like = '.'
+    hash_name: str = DEFAULT_HASH,
     ) -> FileList:
-    pass
 
+    path = Path(path)
+    temp_dir = storage.get_temp_dir()
+    os.makedirs(temp_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=temp_dir) as temp_dir:
+        temp_dir = Path(temp_dir)
 
+        _copy_into(path, temp_dir)
+
+        file_list = make_file_list(temp_dir, hash_name)
+
+        _move_to_storage(file_list, temp_dir, storage)
+
+    return file_list
