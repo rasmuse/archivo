@@ -88,7 +88,6 @@ _EQUIV_ATTRIBUTES = [
     'hash_name',
     'hexdigest',
     'mode',
-    'atime_ns',
     'mtime_ns',
     'size',
 ]
