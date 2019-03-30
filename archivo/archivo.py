@@ -69,44 +69,37 @@ class Storage:
         write_json_file(metadata, _get_storage_meta_path(path))
 
 
-_RECORD_STAT_RESULTS = [
-    'size',
-    'ctime_ns',
-]
-
-_PRESERVE_STAT_RESULTS = [
-    'mode',
-    'atime_mtime_ns',
-]
-
-_ALL_STAT_RESULTS = _RECORD_STAT_RESULTS + _PRESERVE_STAT_RESULTS
-
-_ENCODE_STAT = {
-    'mode': lambda stat_result: stat_result.st_mode,
-    'size': lambda stat_result: stat_result.st_size,
-    'ctime_ns': lambda stat_result: stat_result.st_ctime_ns,
-    'atime_mtime_ns': lambda sr: (sr.st_atime_ns, sr.st_mtime_ns),
-}
-
-_SET_STAT = {
-    'mode': lambda path, mode: os.chmod(path, mode),
-    'atime_mtime_ns': lambda path, times: os.utime(path, ns=times),
-}
-
 def _get_stat_data(file):
     stat_result = os.stat(file.fileno())
-    return {k: _ENCODE_STAT[k](stat_result) for k in _ALL_STAT_RESULTS}
+    return {
+        'mode': stat_result.st_mode,
+        'size': stat_result.st_size,
+        'ctime_ns': stat_result.st_ctime_ns,
+        'atime_ns': stat_result.st_atime_ns,
+        'mtime_ns': stat_result.st_mtime_ns,
+    }
 
-def _restore_stat_data(path, stat_data):
-    for k, v in _PRESERVE_STAT_RESULTS.items():
-        _SET_STAT[k](path, v)
+def _restore_stat_data(path, file_spec):
+    os.chmod(path, file_spec.mode)
+    os.utime(path, ns=(file_spec.atime_ns, file_spec.mtime_ns))
+
+
+_EQUIV_ATTRIBUTES = [
+    'hash_name',
+    'hexdigest',
+    'mode',
+    'atime_ns',
+    'mtime_ns',
+    'size',
+]
 
 @attr.s(auto_attribs=True)
 class FileSpec:
     hash_name: str
     hexdigest: str
     mode: int
-    atime_mtime_ns: Tuple[int, int]
+    atime_ns: int
+    mtime_ns: int
     size: int
     ctime_ns: int
 
