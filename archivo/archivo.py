@@ -27,9 +27,9 @@ import attr
 
 T = TypeVar('T')
 
-path_like = Union[Path, str]
-
 DEFAULT_HASH = 'sha256'
+
+PathLike = Union[Path, str]
 
 def set_mode(path, mode):
     os.chmod(path, mode)
@@ -40,7 +40,7 @@ def set_mtime_ns(path, mtime_ns):
 
 _CHUNK_SIZE = 4096
 
-def get_file_hexdigest(path: path_like, hash_name: str) -> str:
+def get_file_hexdigest(path: PathLike, hash_name: str) -> str:
     m = hashlib.new(hash_name)
     with open(path, 'rb') as f:
         while True:
@@ -111,7 +111,7 @@ def get_apparent_name(path: Path) -> str:
         return path.resolve().name
 
 
-def read_meta(path: path_like) -> Union[FileMeta, DirMeta]:
+def read_meta(path: PathLike) -> Union[FileMeta, DirMeta]:
     path = Path(path).resolve()
 
     stat_result = os.stat(path)
@@ -129,7 +129,7 @@ def read_meta(path: path_like) -> Union[FileMeta, DirMeta]:
             )
 
 
-def read_spec(path: path_like, hash_name: str) -> FileOrDirSpec:
+def read_spec(path: PathLike, hash_name: str) -> FileOrDirSpec:
     path = Path(path)
     # Doing stat first of all to get it before any possible modification
     # by following operations
@@ -168,7 +168,7 @@ class DifferentSpec(Exception):
     def __str__(self):
         return self.message
 
-def check_fulfils_spec(path: path_like, root_spec: FileOrDirSpec):
+def check_fulfils_spec(path: PathLike, root_spec: FileOrDirSpec):
     if path.is_symlink():
         raise ValueError(f'cannot check symlink {path}')
 
@@ -218,11 +218,11 @@ def check_fulfils_spec(path: path_like, root_spec: FileOrDirSpec):
 AbsPath = NewType('AbsPath', Path)
 RelPath = NewType('RelPath', Path)
 
-def ensure_abs(path: path_like) -> AbsPath:
+def ensure_abs(path: PathLike) -> AbsPath:
     resolved = Path(path).resolve()
     return AbsPath(resolved)
 
-def ensure_rel(path: path_like) -> RelPath:
+def ensure_rel(path: PathLike) -> RelPath:
     path = Path(path)
     if path.is_absolute():
         raise ValueError(f'path {path} is not relative')
@@ -277,7 +277,7 @@ class Storage:
         return storage_path / '.archivo-storage'
 
     @staticmethod
-    def create(path: path_like, hash_name=DEFAULT_HASH) -> Storage:
+    def create(path: PathLike, hash_name=DEFAULT_HASH) -> Storage:
         path = ensure_abs(path)
         os.makedirs(path, exist_ok=False)
         metadata = {
@@ -292,7 +292,7 @@ class Storage:
         return self._get_storage_path(file_spec).exists()
 
 
-    def store(self, src_path: path_like) -> FileOrDirSpec:
+    def store(self, src_path: PathLike) -> FileOrDirSpec:
         src_path = Path(src_path)
         with tempfile.TemporaryDirectory(dir=self.path) as tmp_dir:
             tmp_dir = Path(tmp_dir)
@@ -341,7 +341,7 @@ class Storage:
         except DifferentSpec as e:
             raise RestoreError('Could not restore') from e
 
-    def restore(self, spec: FileOrDirSpec, dst_dir: path_like) -> None:
+    def restore(self, spec: FileOrDirSpec, dst_dir: PathLike) -> None:
         dst_dir = Path(dst_dir)
         dst_path = dst_dir / spec.name
 
