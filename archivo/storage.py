@@ -1,51 +1,26 @@
 # -*- coding: utf-8 -*-
 
-"""Main module."""
-
 from __future__ import annotations
 from pathlib import Path
 import os
 import json
-import stat
 import shutil
 import tempfile
-import hashlib
 import datetime
-import typing
 from typing import (
     Union,
-    Sequence,
-    Dict,
-    Generator,
-    Tuple,
-    Any,
-    TypeVar,
-    NewType,
-    Callable,
     )
+
 import attr
 
-
-AbsPath = NewType('AbsPath', Path)
-RelPath = NewType('RelPath', Path)
-
-def ensure_abs(path: PathLike) -> AbsPath:
-    resolved = Path(path).resolve()
-    return AbsPath(resolved)
-
-def ensure_rel(path: PathLike) -> RelPath:
-    path = Path(path)
-    if path.is_absolute():
-        raise ValueError(f'path {path} is not relative')
-    return RelPath(path)
-
-def write_json_file(data, path):
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-        f.write('\n')
-
-def now_to_text():
-    return datetime.datetime.utcnow().isoformat()
+from archivo import *
+from archivo.specs import (
+    iter_paths_and_specs,
+    get_apparent_name,
+    read_spec,
+    DifferentSpec,
+    check_fulfils_spec,
+    )
 
 
 class CollisionError(Exception):
@@ -69,10 +44,18 @@ def _copy_into(src_path: Path, dst_dir: Path) -> Path:
     return dst_path
 
 
+def set_mode(path, mode):
+    os.chmod(path, mode)
+
+def set_mtime_ns(path, mtime_ns):
+    atime_ns = os.stat(path).st_atime_ns
+    os.utime(path, ns=(atime_ns, mtime_ns))
+
+
 @attr.s(auto_attribs=True)
 class Storage:
-    path: AbsPath = attr.ib(converter=ensure_abs)
-    meta: Dict[str, Any] = attr.ib(init=False, repr=False)
+    path: Path = attr.ib(converter=ensure_abs)
+    meta: Dict[str, Union[int, str]] = attr.ib(init=False, repr=False)
     hash_name: str = attr.ib(init=False, repr=False)
 
     def _get_storage_path(self, file_spec):
@@ -84,7 +67,7 @@ class Storage:
             self.hash_name = self.meta['hash_name']
 
     @staticmethod
-    def _get_meta_path(storage_path: AbsPath) -> AbsPath:
+    def _get_meta_path(storage_path: Path) -> Path:
         return storage_path / '.archivo-storage'
 
     @staticmethod
@@ -141,11 +124,7 @@ class Storage:
 
         # Restore metadata
         for rel_path, spec in iter_paths_and_specs(root_spec):
-            print(rel_path)
-            print(spec.meta)
             self._restore_metadata(spec.meta, dst_dir / rel_path)
-            print(os.stat(dst_dir / rel_path))
-            print()
 
         try:
             check_fulfils_spec(root_dst_path, root_spec)
