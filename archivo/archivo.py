@@ -31,20 +31,11 @@ path_like = Union[Path, str]
 
 DEFAULT_HASH = 'sha256'
 
-def read_file_meta(path):
-    stat_result = os.stat(path)
-    return {
-        'mtime_ns': stat_result.st_mtime_ns,
-        'atime_ns': stat_result.st_atime_ns,
-        'mode': stat_result.st_mode,
-        'size': stat_result.st_size,
-    }
-
 def set_mode(path, mode):
     os.chmod(path, mode)
 
 def set_mtime_ns(path, mtime_ns):
-    atime_ns = read_file_meta(path)['atime_ns']
+    atime_ns = os.stat(path).st_atime_ns
     os.utime(path, ns=(atime_ns, mtime_ns))
 
 _CHUNK_SIZE = 4096
@@ -60,21 +51,28 @@ def get_file_hexdigest(path: path_like, hash_name: str) -> str:
     return m.hexdigest()
 
 @attr.s(auto_attribs=True)
-class FileSpec:
-    name: str
-    hash_name: str
-    hexdigest: str
+class FileMeta:
     mode: int
     mtime_ns: int
     size: int
 
 @attr.s(auto_attribs=True)
-class DirSpec:
+class FileSpec:
     name: str
     hash_name: str
-    contents: Sequence[FileOrDirSpec]
+    hexdigest: str
+    meta: FileMeta
+
+@attr.s(auto_attribs=True)
+class DirMeta:
     mode: int
     mtime_ns: int
+
+@attr.s(auto_attribs=True)
+class DirSpec:
+    name: str
+    contents: Sequence[FileOrDirSpec]
+    meta: DirMeta
 
 
 FileOrDirSpec = Union[FileSpec, DirSpec]
@@ -113,11 +111,29 @@ def get_apparent_name(path: Path) -> str:
         return path.resolve().name
 
 
+def read_meta(path: path_like) -> Union[FileMeta, DirMeta]:
+    path = Path(path).resolve()
+
+    stat_result = os.stat(path)
+
+    if path.is_file():
+        return FileMeta(
+            mtime_ns=stat_result.st_mtime_ns,
+            mode=stat_result.st_mode,
+            size=stat_result.st_size,
+            )
+    elif path.is_dir():
+        return DirMeta(
+            mtime_ns=stat_result.st_mtime_ns,
+            mode=stat_result.st_mode,
+            )
+
+
 def read_spec(path: path_like, hash_name: str) -> FileOrDirSpec:
     path = Path(path)
     # Doing stat first of all to get it before any possible modification
     # by following operations
-    file_meta = read_file_meta(path)
+    meta = read_meta(path)
 
     if path.is_dir():
         type_ = DirSpec
@@ -128,13 +144,11 @@ def read_spec(path: path_like, hash_name: str) -> FileOrDirSpec:
 
     kwargs = {}
     kwargs['name'] = get_apparent_name(path)
-    kwargs['hash_name'] = hash_name
-    kwargs['mode'] = file_meta['mode']
-    kwargs['mtime_ns'] = file_meta['mtime_ns']
+    kwargs['meta'] = meta
 
     if type_ == FileSpec:
         kwargs['hexdigest'] = get_file_hexdigest(path, hash_name)
-        kwargs['size'] = file_meta['size']
+        kwargs['hash_name'] = hash_name
 
     if type_ == DirSpec:
         kwargs['contents'] = [
@@ -144,6 +158,62 @@ def read_spec(path: path_like, hash_name: str) -> FileOrDirSpec:
 
     return type_(**kwargs)
 
+
+class DifferentSpec(Exception):
+    def __init__(self, message, expected_spec, target_info):
+        self.message = message
+        self.expected_spec = expected_spec
+        self.target_info = target_info
+
+    def __str__(self):
+        return self.message
+
+def check_fulfils_spec(path: path_like, root_spec: FileOrDirSpec):
+    if path.is_symlink():
+        raise ValueError(f'cannot check symlink {path}')
+
+    path = Path(path).resolve()
+    containing_dir = path.parent
+
+    # For all dirs and files...
+    for rel_path, spec in iter_paths_and_specs(root_spec):
+
+        # Check that they exist
+        abs_path = containing_dir / rel_path
+        if not abs_path.exists():
+            raise DifferentSpec(
+                message=f'subpath {rel_path} does not exist',
+                expected_spec=spec,
+                target_info={'path': abs_path},
+                )
+
+        # Check that they have the right metadata
+        meta = read_meta(abs_path)
+        if meta != spec.meta:
+            raise DifferentSpec(
+                message=(
+                    f'metadata at {rel_path} does not match: '
+                    f'expected {spec.meta} but found {meta}'
+                    ),
+                expected_spec=spec,
+                target_info={'path': abs_path, 'meta': meta},
+                )
+
+    # Then check that all files have the right spec (including content digest)
+    for rel_path, spec in iter_paths_and_specs(root_spec, dirs=False):
+        abs_path = containing_dir / rel_path
+        assert abs_path.is_file()
+
+        target_spec = read_spec(abs_path, spec.hash_name)
+        if target_spec != spec:
+            raise DifferentSpec(
+                message=(
+                    f'file spec at {rel_path} does not match: '
+                    f'expected {spec} but found {target_spec}'
+                    ),
+                expected_spec=spec,
+                target_info={'path': rel_path, 'spec': target_spec}
+                )
 
 AbsPath = NewType('AbsPath', Path)
 RelPath = NewType('RelPath', Path)
@@ -168,22 +238,10 @@ def now_to_text():
 
 
 class CollisionError(Exception):
-    def __init__(self, message, desired, existing):
-        self.message = message
-        self.desired = desired
-        self.existing = existing
-
-    def __str__(self):
-        return self.message
+    pass
 
 class RestoreError(Exception):
-    def __init__(self, message, desired, restored):
-        self.message = message
-        self.desired = desired
-        self.restored = restored
-
-    def __str__(self):
-        return self.message
+    pass
 
 
 def _copy_into(src_path: Path, dst_dir: Path) -> Path:
@@ -253,9 +311,9 @@ class Storage:
 
         return spec
 
-    def _restore_metadata(self, spec, dst_path):
-        set_mode(dst_path, spec.mode)
-        set_mtime_ns(dst_path, spec.mtime_ns)
+    def _restore_metadata(self, meta, dst_path):
+        set_mode(dst_path, meta.mode)
+        set_mtime_ns(dst_path, meta.mtime_ns)
 
     def _restore_into(self, root_spec, dst_dir):
 
@@ -272,30 +330,26 @@ class Storage:
 
         # Restore metadata
         for rel_path, spec in iter_paths_and_specs(root_spec):
-            self._restore_metadata(spec, dst_dir / rel_path)
+            print(rel_path)
+            print(spec.meta)
+            self._restore_metadata(spec.meta, dst_dir / rel_path)
+            print(os.stat(dst_dir / rel_path))
+            print()
 
-        # Check that results are correct
-        restored_spec = read_spec(root_dst_path, root_spec.hash_name)
-
-        if not restored_spec == root_spec:
-            raise RestoreError(
-                message='Restoration resulted in the wrong spec.',
-                desired=root_spec,
-                restored=restored_spec
-                )
+        try:
+            check_fulfils_spec(root_dst_path, root_spec)
+        except DifferentSpec as e:
+            raise RestoreError('Could not restore') from e
 
     def restore(self, spec: FileOrDirSpec, dst_dir: path_like) -> None:
         dst_dir = Path(dst_dir)
         dst_path = dst_dir / spec.name
 
         if dst_path.exists():
-            existing_spec = read_spec(dst_path, spec.hash_name)
-            if existing_spec != spec:
-                raise CollisionError(
-                    f'Another file or directory is on path {dst_path}',
-                    desired=spec,
-                    existing=existing_spec
-                    )
+            try:
+                check_fulfils_spec(dst_path, spec)
+            except DifferentSpec as e:
+                raise CollisionError(f'Other file or dir at {dst_path}') from e
 
             # All fine; no restore needed
             return
